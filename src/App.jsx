@@ -388,26 +388,86 @@ function ElectrochemAI() {
   const [showKeyInput, setShowKeyInput] = useState(false);
   const endRef = useRef(null);
 
+  const [attachedFiles, setAttachedFiles] = useState([]);
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef(null);
+
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   const saveKey = (key) => { localStorage.setItem("researchos_apikey", key); setApiKey(key); setShowKeyInput(false); };
 
+  // Read file as text
+  const readFile = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => resolve({ name: file.name, size: file.size, type: file.type, content: e.target.result });
+    reader.onerror = reject;
+    reader.readAsText(file);
+  });
+
+  const handleFiles = async (files) => {
+    const supported = Array.from(files).filter(f =>
+      f.name.match(/\.(csv|txt|dat|mpt|mps|dta|xlsx?|tsv|asc|cor)$/i) || f.type.includes("text")
+    );
+    if (supported.length === 0) {
+      alert("Supported formats: CSV, TXT, DAT, MPT, MPS, DTA, TSV, ASC, COR, XLS/XLSX");
+      return;
+    }
+    const read = await Promise.all(supported.map(readFile));
+    // Truncate large files to first 8000 chars
+    const processed = read.map(f => ({ ...f, content: f.content.slice(0, 8000), truncated: f.content.length > 8000 }));
+    setAttachedFiles(prev => [...prev, ...processed]);
+  };
+
+  const removeFile = (idx) => setAttachedFiles(prev => prev.filter((_, i) => i !== idx));
+
+  const onDrop = (e) => { e.preventDefault(); setDragOver(false); handleFiles(e.dataTransfer.files); };
+  const onDragOver = (e) => { e.preventDefault(); setDragOver(true); };
+  const onDragLeave = () => setDragOver(false);
+
   const send = async () => {
-    if (!input.trim() || loading) return;
+    if ((!input.trim() && attachedFiles.length === 0) || loading) return;
     if (!apiKey) { setShowKeyInput(true); return; }
-    const userMsg = input.trim();
+
+    // Build user message
+    let userMsg = input.trim();
+    let displayMsg = userMsg;
+    
+    if (attachedFiles.length > 0) {
+      const fileBlock = attachedFiles.map(f =>
+        `\n\n--- FILE: ${f.name} (${(f.size/1024).toFixed(1)} KB)${f.truncated ? " [truncated to first 8000 chars]" : ""} ---\n${f.content}`
+      ).join("\n");
+      userMsg = (userMsg || "Please analyze this data file and provide expert electrochemical interpretation.") + fileBlock;
+      displayMsg = (input.trim() || "📎 Analyze uploaded file(s)") + `\n📎 ${attachedFiles.map(f => f.name).join(", ")}`;
+    }
+
     setInput("");
-    setMessages(prev => [...prev, { role: "user", content: userMsg }]);
+    setAttachedFiles([]);
+    setMessages(prev => [...prev, { role: "user", content: displayMsg }]);
     setLoading(true);
+
     try {
-      const history = messages.map(m => ({ role: m.role, content: m.content }));
+      // Build history without file blobs (too large), only text messages
+      const history = messages
+        .filter(m => !m.content.includes("--- FILE:"))
+        .map(m => ({ role: m.role, content: m.content }));
+
       const response = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          system: "You are an expert electrochemical data analysis assistant for Dr. Jibril, an Alexander von Humboldt Postdoctoral Fellow at TU Darmstadt. His research focuses on waste-derived carbon architectures for Li-S batteries, sodium-ion batteries, supercapacitors, and hydrogen storage. He uses operando Raman spectroscopy, COMSOL multiphysics modeling, and machine learning integration. Provide precise, expert analysis. Be concise but thorough.",
+          max_tokens: 1500,
+          system: `You are an expert electrochemical data analysis assistant for Dr. Jibril, an Alexander von Humboldt Postdoctoral Fellow at TU Darmstadt. His research focuses on waste-derived carbon architectures for Li-S batteries, sodium-ion batteries, supercapacitors, and hydrogen storage. He uses operando Raman spectroscopy, COMSOL multiphysics modeling, and machine learning integration.
+
+When analyzing data files:
+- Identify the data type (CV, EIS, GCD, BET, Raman, XRD, TGA etc.) from column headers and values
+- Extract key parameters: capacity, voltage windows, resistance values, surface area, pore size, etc.
+- Flag anomalies, noise, or measurement artifacts
+- Provide context-specific interpretation for his research
+- Suggest follow-up experiments or analysis steps
+- Format numbers clearly with units
+
+Be precise, expert, and concise.`,
           messages: [...history, { role: "user", content: userMsg }],
         }),
       });
@@ -427,12 +487,14 @@ function ElectrochemAI() {
     "What specific capacitance is expected for my activated carbon supercapacitor?",
   ];
 
+  const canSend = (input.trim() || attachedFiles.length > 0) && !loading;
+
   return (
     <div className="fade-in" style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 120px)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
         <div>
           <h2 style={{ fontFamily: "'Syne', sans-serif", fontWeight: 800, fontSize: 22 }}>Electrochemical Analysis AI</h2>
-          <p style={{ color: COLORS.textMuted, fontSize: 13, marginTop: 2 }}>AI-powered interpretation of your experimental data</p>
+          <p style={{ color: COLORS.textMuted, fontSize: 13, marginTop: 2 }}>Upload data files or ask questions — AI interprets your results</p>
         </div>
         <Btn small onClick={() => setShowKeyInput(true)} style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11 }}>
           {apiKey ? "🔑 API Key Set" : "⚠ Set API Key"}
@@ -442,7 +504,7 @@ function ElectrochemAI() {
       {showKeyInput && (
         <Modal title="Anthropic API Key" onClose={() => setShowKeyInput(false)}>
           <p style={{ fontSize: 13, color: COLORS.textDim, marginBottom: 16, lineHeight: 1.6 }}>
-            To use the AI assistant in the standalone app, enter your Anthropic API key. It is stored only in your browser's localStorage and never sent anywhere except directly to the Anthropic API.
+            Enter your Anthropic API key. It is stored only in your browser's localStorage and never sent anywhere except directly to the Anthropic API.
           </p>
           <FormRow label="API Key (sk-ant-...)">
             <input type="password" defaultValue={apiKey} id="apikey-input" placeholder="sk-ant-api03-..." />
@@ -457,7 +519,8 @@ function ElectrochemAI() {
         </Modal>
       )}
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+      {/* Quick prompts */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
         {quickPrompts.map(p => (
           <button key={p} onClick={() => setInput(p)} style={{ fontSize: 11, padding: "5px 10px", borderRadius: 6, background: COLORS.surface2, border: `1px solid ${COLORS.border}`, color: COLORS.textDim, cursor: "pointer" }}>
             {p.slice(0, 48)}…
@@ -465,6 +528,38 @@ function ElectrochemAI() {
         ))}
       </div>
 
+      {/* Drop zone hint */}
+      <div
+        onDrop={onDrop} onDragOver={onDragOver} onDragLeave={onDragLeave}
+        style={{ border: `2px dashed ${dragOver ? COLORS.accent : COLORS.border}`, borderRadius: 10, padding: "12px 16px", marginBottom: 12, background: dragOver ? COLORS.accent + "08" : "transparent", transition: "all 0.2s", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
+          <div style={{ fontSize: 20 }}>📂</div>
+          <div>
+            <div style={{ fontSize: 13, color: dragOver ? COLORS.accent : COLORS.textDim, fontWeight: 500 }}>
+              {dragOver ? "Drop file to upload" : "Drag & drop data files here"}
+            </div>
+            <div style={{ fontSize: 11, color: COLORS.textMuted }}>CSV, TXT, DAT, MPT, MPS, DTA, TSV, ASC, COR, XLS — up to 8KB parsed</div>
+          </div>
+        </div>
+        <Btn small variant="primary" onClick={() => fileInputRef.current?.click()}>
+          📎 Browse Files
+        </Btn>
+        <input ref={fileInputRef} type="file" multiple accept=".csv,.txt,.dat,.mpt,.mps,.dta,.tsv,.asc,.cor,.xls,.xlsx" style={{ display: "none" }} onChange={e => handleFiles(e.target.files)} />
+      </div>
+
+      {/* Attached files chips */}
+      {attachedFiles.length > 0 && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+          {attachedFiles.map((f, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", borderRadius: 99, background: COLORS.accent + "18", border: `1px solid ${COLORS.accent}40`, fontSize: 12, color: COLORS.accent }}>
+              📄 {f.name} <span style={{ color: COLORS.textMuted, fontSize: 10 }}>({(f.size/1024).toFixed(1)}KB)</span>
+              <button onClick={() => removeFile(i)} style={{ background: "none", border: "none", color: COLORS.accent, padding: 0, lineHeight: 1, fontSize: 14, marginLeft: 2 }}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Chat window */}
       <div style={{ flex: 1, background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: "16px 16px 0", overflowY: "auto", marginBottom: 12 }}>
         {messages.map((m, i) => (
           <div key={i} style={{ marginBottom: 16, display: "flex", gap: 12, justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
@@ -473,7 +568,7 @@ function ElectrochemAI() {
                 <Icon name="flask" size={13} color={COLORS.accent} />
               </div>
             )}
-            <div style={{ maxWidth: "75%", padding: "10px 14px", borderRadius: m.role === "user" ? "12px 12px 4px 12px" : "12px 12px 12px 4px", background: m.role === "user" ? COLORS.accent + "18" : COLORS.surface2, border: `1px solid ${m.role === "user" ? COLORS.accent + "35" : COLORS.border}`, fontSize: 13, lineHeight: 1.65, whiteSpace: "pre-wrap" }}>
+            <div style={{ maxWidth: "78%", padding: "10px 14px", borderRadius: m.role === "user" ? "12px 12px 4px 12px" : "12px 12px 12px 4px", background: m.role === "user" ? COLORS.accent + "18" : COLORS.surface2, border: `1px solid ${m.role === "user" ? COLORS.accent + "35" : COLORS.border}`, fontSize: 13, lineHeight: 1.7, whiteSpace: "pre-wrap" }}>
               {m.content}
             </div>
           </div>
@@ -484,19 +579,21 @@ function ElectrochemAI() {
               <Icon name="flask" size={13} color={COLORS.accent} />
             </div>
             <div style={{ padding: "12px 16px", borderRadius: "12px 12px 12px 4px", background: COLORS.surface2, border: `1px solid ${COLORS.border}` }}>
-              <div style={{ display: "flex", gap: 5 }}>{[0, 1, 2].map(i => <div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: COLORS.accent, animation: "pulse 1s ease-in-out infinite", animationDelay: `${i * 0.2}s` }} />)}</div>
+              <div style={{ display: "flex", gap: 5 }}>{[0,1,2].map(i => <div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: COLORS.accent, animation: "pulse 1s ease-in-out infinite", animationDelay: `${i*0.2}s` }} />)}</div>
             </div>
           </div>
         )}
         <div ref={endRef} />
       </div>
 
+      {/* Input row */}
       <div style={{ display: "flex", gap: 10 }}>
         <textarea value={input} onChange={e => setInput(e.target.value)}
           onKeyDown={e => e.key === "Enter" && !e.shiftKey && (e.preventDefault(), send())}
-          placeholder="Describe your data or ask for analysis… (Enter to send)"
+          placeholder={attachedFiles.length > 0 ? "Add a question about your file, or press Enter to auto-analyze…" : "Describe your data or ask for analysis… (Enter to send)"}
           rows={2} style={{ flex: 1, resize: "none" }} />
-        <button onClick={send} disabled={loading || !input.trim()} style={{ padding: "0 18px", borderRadius: 8, background: input.trim() && !loading ? COLORS.accent : COLORS.surface2, border: `1px solid ${input.trim() && !loading ? COLORS.accent : COLORS.border}`, color: input.trim() && !loading ? "#000" : COLORS.textMuted, display: "flex", alignItems: "center" }}>
+        <button onClick={send} disabled={!canSend}
+          style={{ padding: "0 18px", borderRadius: 8, background: canSend ? COLORS.accent : COLORS.surface2, border: `1px solid ${canSend ? COLORS.accent : COLORS.border}`, color: canSend ? "#000" : COLORS.textMuted, display: "flex", alignItems: "center", transition: "all 0.15s" }}>
           <Icon name="send" size={15} />
         </button>
       </div>
