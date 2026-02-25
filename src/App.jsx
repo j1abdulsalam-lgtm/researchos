@@ -1,4 +1,9 @@
 import { useState, useEffect, useRef } from "react";
+import {
+  LineChart, Line, ScatterChart, Scatter, BarChart, Bar,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ResponsiveContainer, ReferenceLine
+} from "recharts";
 
 const COLORS = {
   bg: "#0a0e1a",
@@ -377,10 +382,170 @@ function Manuscripts({ data, setData }) {
   );
 }
 
+// ─── Chart Utilities ──────────────────────────────────────────────────────────
+const parseCSVData = (content) => {
+  const lines = content.trim().split("\n").filter(l => l.trim());
+  if (lines.length < 2) return null;
+
+  // Find header line (first line with non-numeric content)
+  let headerIdx = 0;
+  for (let i = 0; i < Math.min(5, lines.length); i++) {
+    const parts = lines[i].split(/[,;\t]+/);
+    if (parts.some(p => isNaN(parseFloat(p.trim())) && p.trim().length > 0)) {
+      headerIdx = i; break;
+    }
+  }
+
+  const sep = lines[headerIdx].includes("\t") ? "\t" : lines[headerIdx].includes(";") ? ";" : ",";
+  const headers = lines[headerIdx].split(sep).map(h => h.trim().replace(/['"]/g, ""));
+  const rows = [];
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    const vals = lines[i].split(sep).map(v => parseFloat(v.trim()));
+    if (vals.every(v => !isNaN(v))) {
+      const row = {};
+      headers.forEach((h, idx) => { row[h] = vals[idx]; });
+      rows.push(row);
+    }
+  }
+  return rows.length > 0 ? { headers, rows } : null;
+};
+
+const detectChartType = (headers) => {
+  const h = headers.map(h => h.toLowerCase());
+  const joined = h.join(" ");
+
+  if (joined.includes("zimag") || joined.includes("z\"") || joined.includes("-zimag") || joined.includes("z_imag")) return "eis";
+  if (joined.includes("potential") || joined.includes("voltage") || joined.includes("volt") || joined.includes(" v ") || h.some(x => x === "v" || x === "e/v")) return "cv";
+  if (joined.includes("time") && (joined.includes("current") || joined.includes("voltage") || joined.includes("capacity"))) return "gcd";
+  if (joined.includes("capacity") || joined.includes("discharge") || joined.includes("charge")) return "gcd";
+  if (joined.includes("frequency") || joined.includes("freq")) return "eis_bode";
+  if (joined.includes("2theta") || joined.includes("angle") || joined.includes("2th")) return "xrd";
+  if (joined.includes("wavenumber") || joined.includes("raman") || joined.includes("shift")) return "raman";
+  if (joined.includes("temperature") || joined.includes("temp")) return "tga";
+  return "line";
+};
+
+const CHART_COLORS = ["#00d4aa", "#3b82f6", "#f59e0b", "#a78bfa", "#ef4444", "#10b981"];
+
+const CustomTooltip = ({ active, payload, label }) => {
+  if (!active || !payload?.length) return null;
+  return (
+    <div style={{ background: "#1a2235", border: "1px solid #243050", borderRadius: 8, padding: "8px 12px", fontSize: 12 }}>
+      {payload.map((p, i) => (
+        <div key={i} style={{ color: p.color, marginBottom: 2 }}>{p.name}: <strong>{typeof p.value === "number" ? p.value.toFixed(4) : p.value}</strong></div>
+      ))}
+      {label !== undefined && <div style={{ color: "#64748b", marginTop: 2 }}>x: {typeof label === "number" ? label.toFixed(4) : label}</div>}
+    </div>
+  );
+};
+
+function DataChart({ file }) {
+  const parsed = parseCSVData(file.content);
+  if (!parsed) return null;
+
+  const { headers, rows } = parsed;
+  const chartType = detectChartType(headers);
+  const h = headers.map(x => x.toLowerCase());
+
+  const chartStyle = { background: "#0f1829", border: "1px solid #243050", borderRadius: 10, padding: "16px 8px 8px", marginTop: 10 };
+  const axisStyle = { tick: { fill: "#64748b", fontSize: 10 }, axisLine: { stroke: "#243050" }, tickLine: { stroke: "#243050" } };
+  const gridStyle = { stroke: "#243050", strokeDasharray: "3 3" };
+  const titleStyle = { fontSize: 11, color: "#64748b", fontFamily: "'IBM Plex Mono', monospace", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8, paddingLeft: 8 };
+
+  // EIS Nyquist Plot
+  if (chartType === "eis") {
+    const zrealKey = headers.find(h => h.toLowerCase().includes("zreal") || h.toLowerCase().includes("z'") || h.toLowerCase().includes("zre"));
+    const zimagKey = headers.find(h => h.toLowerCase().includes("zimag") || h.toLowerCase().includes("z\"") || h.toLowerCase().includes("zim"));
+    if (!zrealKey || !zimagKey) return null;
+    const data = rows.map(r => ({ x: r[zrealKey], y: -Math.abs(r[zimagKey]) }));
+    return (
+      <div style={chartStyle}>
+        <div style={titleStyle}>EIS — Nyquist Plot</div>
+        <ResponsiveContainer width="100%" height={240}>
+          <ScatterChart margin={{ top: 5, right: 20, bottom: 20, left: 10 }}>
+            <CartesianGrid {...gridStyle} />
+            <XAxis dataKey="x" name="Z' (Ω)" label={{ value: "Z' (Ω)", position: "insideBottom", offset: -10, fill: "#64748b", fontSize: 10 }} {...axisStyle} />
+            <YAxis dataKey="y" name="-Z'' (Ω)" label={{ value: "-Z'' (Ω)", angle: -90, position: "insideLeft", fill: "#64748b", fontSize: 10 }} {...axisStyle} />
+            <Tooltip cursor={{ strokeDasharray: "3 3" }} content={<CustomTooltip />} />
+            <Scatter data={data} fill={CHART_COLORS[0]} line={{ stroke: CHART_COLORS[0], strokeWidth: 1.5 }} lineType="joint" />
+          </ScatterChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  }
+
+  // CV Plot
+  if (chartType === "cv") {
+    const xKey = headers.find(h => h.toLowerCase().includes("potential") || h.toLowerCase().includes("volt") || h.toLowerCase() === "v" || h.toLowerCase() === "e/v") || headers[0];
+    const yKeys = headers.filter(h => h !== xKey);
+    return (
+      <div style={chartStyle}>
+        <div style={titleStyle}>Cyclic Voltammogram</div>
+        <ResponsiveContainer width="100%" height={240}>
+          <LineChart data={rows} margin={{ top: 5, right: 20, bottom: 20, left: 10 }}>
+            <CartesianGrid {...gridStyle} />
+            <XAxis dataKey={xKey} label={{ value: `${xKey}`, position: "insideBottom", offset: -10, fill: "#64748b", fontSize: 10 }} {...axisStyle} />
+            <YAxis label={{ value: yKeys[0] || "Current", angle: -90, position: "insideLeft", fill: "#64748b", fontSize: 10 }} {...axisStyle} />
+            <Tooltip content={<CustomTooltip />} />
+            <ReferenceLine y={0} stroke="#243050" strokeDasharray="3 3" />
+            {yKeys.map((k, i) => <Line key={k} type="monotone" dataKey={k} stroke={CHART_COLORS[i % CHART_COLORS.length]} dot={false} strokeWidth={2} />)}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  }
+
+  // Raman / XRD / TGA / Generic line chart
+  if (["raman", "xrd", "tga", "line", "eis_bode"].includes(chartType)) {
+    const xKey = headers[0];
+    const yKeys = headers.slice(1);
+    const xLabel = chartType === "raman" ? "Raman Shift (cm⁻¹)" : chartType === "xrd" ? "2θ (°)" : chartType === "tga" ? "Temperature (°C)" : xKey;
+    return (
+      <div style={chartStyle}>
+        <div style={titleStyle}>
+          {chartType === "raman" ? "Raman Spectrum" : chartType === "xrd" ? "XRD Pattern" : chartType === "tga" ? "TGA Profile" : chartType === "eis_bode" ? "Bode Plot" : `${file.name}`}
+        </div>
+        <ResponsiveContainer width="100%" height={240}>
+          <LineChart data={rows} margin={{ top: 5, right: 20, bottom: 20, left: 10 }}>
+            <CartesianGrid {...gridStyle} />
+            <XAxis dataKey={xKey} label={{ value: xLabel, position: "insideBottom", offset: -10, fill: "#64748b", fontSize: 10 }} {...axisStyle} />
+            <YAxis label={{ value: yKeys[0] || "Intensity", angle: -90, position: "insideLeft", fill: "#64748b", fontSize: 10 }} {...axisStyle} />
+            <Tooltip content={<CustomTooltip />} />
+            {yKeys.map((k, i) => <Line key={k} type="monotone" dataKey={k} stroke={CHART_COLORS[i % CHART_COLORS.length]} dot={false} strokeWidth={2} name={k} />)}
+            {yKeys.length > 1 && <Legend wrapperStyle={{ fontSize: 11, color: "#64748b" }} />}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  }
+
+  // GCD
+  if (chartType === "gcd") {
+    const xKey = headers.find(h => h.toLowerCase().includes("time") || h.toLowerCase().includes("capacity")) || headers[0];
+    const yKeys = headers.filter(h => h !== xKey);
+    return (
+      <div style={chartStyle}>
+        <div style={titleStyle}>GCD Profile</div>
+        <ResponsiveContainer width="100%" height={240}>
+          <LineChart data={rows} margin={{ top: 5, right: 20, bottom: 20, left: 10 }}>
+            <CartesianGrid {...gridStyle} />
+            <XAxis dataKey={xKey} label={{ value: xKey, position: "insideBottom", offset: -10, fill: "#64748b", fontSize: 10 }} {...axisStyle} />
+            <YAxis label={{ value: yKeys[0] || "Voltage (V)", angle: -90, position: "insideLeft", fill: "#64748b", fontSize: 10 }} {...axisStyle} />
+            <Tooltip content={<CustomTooltip />} />
+            {yKeys.map((k, i) => <Line key={k} type="monotone" dataKey={k} stroke={CHART_COLORS[i % CHART_COLORS.length]} dot={false} strokeWidth={2} name={k} />)}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  }
+
+  return null;
+}
+
 // ─── Electrochemical AI ───────────────────────────────────────────────────────
 function ElectrochemAI() {
   const [messages, setMessages] = useState([
-    { role: "assistant", content: "Hello Jibril! I'm your Electrochemical Analysis Assistant. I can help you interpret CV curves, EIS spectra, GCD profiles, BET data, Raman spectra, and any electrochemical results from your Li-S battery, supercapacitor, sodium-ion battery, or hydrogen storage work. What would you like to analyze?" }
+    { role: "assistant", content: "Hello Jibril! I'm your Electrochemical Analysis Assistant. I can help you interpret CV curves, EIS spectra, GCD profiles, BET data, Raman spectra, and any electrochemical results from your Li-S battery, supercapacitor, sodium-ion battery, or hydrogen storage work.\n\n📊 Upload a data file to get an instant chart + AI interpretation, or just type a question below." }
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -442,7 +607,7 @@ function ElectrochemAI() {
 
     setInput("");
     setAttachedFiles([]);
-    setMessages(prev => [...prev, { role: "user", content: displayMsg }]);
+    setMessages(prev => [...prev, { role: "user", content: displayMsg, files: attachedFiles }]);
     setLoading(true);
 
     try {
@@ -568,8 +733,20 @@ Be precise, expert, and concise.`,
                 <Icon name="flask" size={13} color={COLORS.accent} />
               </div>
             )}
-            <div style={{ maxWidth: "78%", padding: "10px 14px", borderRadius: m.role === "user" ? "12px 12px 4px 12px" : "12px 12px 12px 4px", background: m.role === "user" ? COLORS.accent + "18" : COLORS.surface2, border: `1px solid ${m.role === "user" ? COLORS.accent + "35" : COLORS.border}`, fontSize: 13, lineHeight: 1.7, whiteSpace: "pre-wrap" }}>
-              {m.content}
+            <div style={{ maxWidth: "78%", display: "flex", flexDirection: "column", alignItems: m.role === "user" ? "flex-end" : "flex-start" }}>
+              <div style={{ padding: "10px 14px", borderRadius: m.role === "user" ? "12px 12px 4px 12px" : "12px 12px 12px 4px", background: m.role === "user" ? COLORS.accent + "18" : COLORS.surface2, border: `1px solid ${m.role === "user" ? COLORS.accent + "35" : COLORS.border}`, fontSize: 13, lineHeight: 1.7, whiteSpace: "pre-wrap", width: "100%" }}>
+                {m.content}
+              </div>
+              {/* Render charts for user messages with files */}
+              {m.files && m.files.map((f, fi) => {
+                const parsed = parseCSVData(f.content);
+                if (!parsed) return null;
+                return (
+                  <div key={fi} style={{ width: "100%", minWidth: 320 }}>
+                    <DataChart file={f} />
+                  </div>
+                );
+              })}
             </div>
           </div>
         ))}
