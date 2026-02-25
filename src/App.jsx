@@ -66,6 +66,10 @@ const Icon = ({ name, size = 18, color = "currentColor" }) => {
     search: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>,
     brain: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96-.46 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.88A2.5 2.5 0 0 1 9.5 2"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96-.46 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.88A2.5 2.5 0 0 0 14.5 2"/></svg>,
     menu: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>,
+    calview: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="14" x2="8" y2="14" strokeWidth="3" strokeLinecap="round"/><line x1="12" y1="14" x2="12" y2="14" strokeWidth="3" strokeLinecap="round"/><line x1="16" y1="14" x2="16" y2="14" strokeWidth="3" strokeLinecap="round"/><line x1="8" y1="18" x2="8" y2="18" strokeWidth="3" strokeLinecap="round"/><line x1="12" y1="18" x2="12" y2="18" strokeWidth="3" strokeLinecap="round"/></svg>,
+    chevLeft: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2"><polyline points="15 18 9 12 15 6"/></svg>,
+    chevRight: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2"><polyline points="9 18 15 12 9 6"/></svg>,
+    task: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>,
   };
   return icons[name] || null;
 };
@@ -268,6 +272,31 @@ function Dashboard({ data }) {
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{k.tags.map(t => <Tag key={t} label={t} />)}</div>
             </div>
           ))}
+        </Card>
+        <Card>
+          <div style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: "'IBM Plex Mono', monospace", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
+            <Icon name="calview" size={13} color={COLORS.accent} /> Today & Upcoming
+          </div>
+          {(() => {
+            const todayStr = now.toISOString().slice(0,10);
+            const typeColors = { meeting: COLORS.blue, deadline: COLORS.red, task: COLORS.accent, reminder: COLORS.amber, other: COLORS.purple };
+            const upcoming = (data.calendarEvents || [])
+              .filter(e => e.date >= todayStr && !e.completed)
+              .sort((a,b) => a.date.localeCompare(b.date) || (a.time||"").localeCompare(b.time||""))
+              .slice(0, 5);
+            if (upcoming.length === 0) return <p style={{ color: COLORS.textMuted, fontSize: 13 }}>No upcoming events. Add some in Calendar.</p>;
+            return upcoming.map(ev => (
+              <div key={ev.id} style={{ padding: "9px 0", borderBottom: `1px solid ${COLORS.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 2 }}>{ev.title}</div>
+                  <div style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: "'IBM Plex Mono', monospace" }}>
+                    {ev.date === todayStr ? "Today" : ev.date}{ev.time ? ` · ${ev.time}` : ""}
+                  </div>
+                </div>
+                <div style={{ width: 8, height: 8, borderRadius: "50%", background: typeColors[ev.type] || COLORS.purple, flexShrink: 0 }} />
+              </div>
+            ));
+          })()}
         </Card>
       </div>
     </div>
@@ -759,6 +788,250 @@ function Collaborations({ data, setData }) {
   );
 }
 
+// ─── Calendar ────────────────────────────────────────────────────────────────
+const EVENT_TYPES = [
+  { key: "meeting", label: "Meeting", color: "#3b82f6" },
+  { key: "deadline", label: "Deadline", color: "#ef4444" },
+  { key: "task", label: "Task", color: "#00d4aa" },
+  { key: "reminder", label: "Reminder", color: "#f59e0b" },
+  { key: "other", label: "Other", color: "#a78bfa" },
+];
+
+function Calendar({ data, setData }) {
+  const today = new Date();
+  const [viewDate, setViewDate] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
+  const [selected, setSelected] = useState(null);
+  const [modal, setModal] = useState(null);
+  const [form, setForm] = useState({});
+  const [viewMode, setViewMode] = useState("month"); // month | agenda
+
+  const events = data.calendarEvents || [];
+
+  const year = viewDate.getFullYear();
+  const month = viewDate.getMonth();
+  const firstDay = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const prevMonthDays = new Date(year, month, 0).getDate();
+
+  const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  const dayNames = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
+  const prevMonth = () => setViewDate(new Date(year, month - 1, 1));
+  const nextMonth = () => setViewDate(new Date(year, month + 1, 1));
+  const goToday = () => { setViewDate(new Date(today.getFullYear(), today.getMonth(), 1)); setSelected(toDateStr(today)); };
+
+  const toDateStr = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+  const todayStr = toDateStr(today);
+
+  const getEventsForDate = (dateStr) => events.filter(e => e.date === dateStr).sort((a,b) => (a.time||"").localeCompare(b.time||""));
+
+  const openNew = (dateStr) => {
+    setForm({ title: "", date: dateStr || toDateStr(today), time: "", type: "task", notes: "", completed: false });
+    setModal("form");
+  };
+  const openEdit = (e) => { setForm({ ...e }); setModal("form"); };
+  const save = () => {
+    const entry = { ...form, id: form.id || Date.now() };
+    setData(d => ({ ...d, calendarEvents: form.id ? (d.calendarEvents||[]).map(e => e.id === entry.id ? entry : e) : [...(d.calendarEvents||[]), entry] }));
+    setModal(null);
+  };
+  const del = (id) => {
+    setData(d => ({ ...d, calendarEvents: (d.calendarEvents||[]).filter(e => e.id !== id) }));
+    setModal(null);
+  };
+  const toggleComplete = (id) => {
+    setData(d => ({ ...d, calendarEvents: (d.calendarEvents||[]).map(e => e.id === id ? { ...e, completed: !e.completed } : e) }));
+  };
+
+  // Build calendar grid
+  const cells = [];
+  for (let i = 0; i < firstDay; i++) cells.push({ day: prevMonthDays - firstDay + 1 + i, current: false });
+  for (let i = 1; i <= daysInMonth; i++) cells.push({ day: i, current: true });
+  const remaining = 42 - cells.length;
+  for (let i = 1; i <= remaining; i++) cells.push({ day: i, current: false });
+
+  // Agenda: upcoming 30 days
+  const agendaEvents = events
+    .filter(e => e.date >= todayStr)
+    .sort((a,b) => a.date.localeCompare(b.date) || (a.time||"").localeCompare(b.time||""))
+    .slice(0, 30);
+
+  const selectedEvents = selected ? getEventsForDate(selected) : [];
+  const typeObj = (key) => EVENT_TYPES.find(t => t.key === key) || EVENT_TYPES[4];
+
+  return (
+    <div className="fade-in">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <h2 style={{ fontFamily: "'Syne', sans-serif", fontWeight: 800, fontSize: 22 }}>Calendar</h2>
+          <p style={{ color: COLORS.textMuted, fontSize: 13, marginTop: 2 }}>Appointments, tasks & deadlines</p>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 3, background: COLORS.surface, padding: 3, borderRadius: 8 }}>
+            {["month","agenda"].map(m => (
+              <button key={m} onClick={() => setViewMode(m)} style={{ padding: "6px 14px", borderRadius: 6, border: "none", background: viewMode === m ? COLORS.surface3 : "transparent", color: viewMode === m ? COLORS.text : COLORS.textMuted, fontSize: 12, fontWeight: viewMode === m ? 600 : 400, textTransform: "capitalize" }}>{m}</button>
+            ))}
+          </div>
+          <Btn small onClick={goToday}>Today</Btn>
+          <Btn variant="primary" onClick={() => openNew(selected || todayStr)}><Icon name="plus" size={15} /> Add Event</Btn>
+        </div>
+      </div>
+
+      {viewMode === "month" && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 280px", gap: 16 }}>
+          {/* Month grid */}
+          <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 12, overflow: "hidden" }}>
+            {/* Month nav */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 18px", borderBottom: `1px solid ${COLORS.border}` }}>
+              <button onClick={prevMonth} style={{ background: "none", border: "none", color: COLORS.textMuted, padding: 4 }}><Icon name="chevLeft" size={18} /></button>
+              <span style={{ fontFamily: "'Syne', sans-serif", fontWeight: 700, fontSize: 16 }}>{monthNames[month]} {year}</span>
+              <button onClick={nextMonth} style={{ background: "none", border: "none", color: COLORS.textMuted, padding: 4 }}><Icon name="chevRight" size={18} /></button>
+            </div>
+            {/* Day headers */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", borderBottom: `1px solid ${COLORS.border}` }}>
+              {dayNames.map(d => (
+                <div key={d} style={{ padding: "8px 0", textAlign: "center", fontSize: 11, color: COLORS.textMuted, fontFamily: "'IBM Plex Mono', monospace", textTransform: "uppercase", letterSpacing: "0.05em" }}>{d}</div>
+              ))}
+            </div>
+            {/* Calendar cells */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)" }}>
+              {cells.map((cell, idx) => {
+                const dateStr = cell.current ? `${year}-${String(month+1).padStart(2,"0")}-${String(cell.day).padStart(2,"0")}` : null;
+                const cellEvents = dateStr ? getEventsForDate(dateStr) : [];
+                const isToday = dateStr === todayStr;
+                const isSelected = dateStr === selected;
+                return (
+                  <div key={idx} onClick={() => dateStr && setSelected(dateStr)}
+                    style={{ minHeight: 80, padding: "6px 8px", borderRight: `1px solid ${COLORS.border}20`, borderBottom: `1px solid ${COLORS.border}20`, cursor: cell.current ? "pointer" : "default", background: isSelected ? COLORS.accent + "12" : isToday ? COLORS.surface2 : "transparent", transition: "background 0.15s" }}>
+                    <div style={{ fontSize: 12, fontWeight: isToday ? 700 : 400, color: !cell.current ? COLORS.border : isToday ? COLORS.accent : COLORS.text, width: 24, height: 24, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "50%", background: isToday ? COLORS.accent + "20" : "transparent", marginBottom: 4 }}>
+                      {cell.day}
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                      {cellEvents.slice(0, 3).map(ev => (
+                        <div key={ev.id} style={{ fontSize: 10, padding: "1px 5px", borderRadius: 3, background: typeObj(ev.type).color + "25", color: typeObj(ev.type).color, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textDecoration: ev.completed ? "line-through" : "none", opacity: ev.completed ? 0.5 : 1 }}>
+                          {ev.time && <span style={{ opacity: 0.7 }}>{ev.time} </span>}{ev.title}
+                        </div>
+                      ))}
+                      {cellEvents.length > 3 && <div style={{ fontSize: 10, color: COLORS.textMuted }}>+{cellEvents.length - 3} more</div>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Day panel */}
+          <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <div style={{ fontFamily: "'Syne', sans-serif", fontWeight: 700, fontSize: 14 }}>
+                {selected ? new Date(selected + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" }) : "Select a day"}
+              </div>
+              {selected && <Btn small variant="primary" onClick={() => openNew(selected)}><Icon name="plus" size={12} /></Btn>}
+            </div>
+            {!selected && <p style={{ color: COLORS.textMuted, fontSize: 13 }}>Click a date to see its events.</p>}
+            {selected && selectedEvents.length === 0 && <p style={{ color: COLORS.textMuted, fontSize: 13 }}>No events. Click + to add one.</p>}
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {selectedEvents.map(ev => (
+                <div key={ev.id} style={{ padding: "10px 12px", borderRadius: 8, background: COLORS.surface2, border: `1px solid ${typeObj(ev.type).color}30`, borderLeft: `3px solid ${typeObj(ev.type).color}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                        <button onClick={() => toggleComplete(ev.id)} style={{ background: "none", border: "none", padding: 0, color: ev.completed ? COLORS.accent : COLORS.textMuted }}>
+                          <Icon name={ev.completed ? "check" : "task"} size={13} />
+                        </button>
+                        <span style={{ fontSize: 13, fontWeight: 500, textDecoration: ev.completed ? "line-through" : "none", opacity: ev.completed ? 0.6 : 1 }}>{ev.title}</span>
+                      </div>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <Badge label={typeObj(ev.type).label} color={typeObj(ev.type).color} small />
+                        {ev.time && <span style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: "'IBM Plex Mono', monospace" }}>{ev.time}</span>}
+                      </div>
+                      {ev.notes && <p style={{ fontSize: 12, color: COLORS.textDim, marginTop: 6, lineHeight: 1.5 }}>{ev.notes}</p>}
+                    </div>
+                    <div style={{ display: "flex", gap: 4, marginLeft: 8 }}>
+                      <button onClick={() => openEdit(ev)} style={{ background: "none", border: "none", color: COLORS.textMuted, padding: 2 }}><Icon name="edit" size={12} /></button>
+                      <button onClick={() => del(ev.id)} style={{ background: "none", border: "none", color: COLORS.red + "70", padding: 2 }}><Icon name="trash" size={12} /></button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {viewMode === "agenda" && (
+        <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 20 }}>
+          <div style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: "'IBM Plex Mono', monospace", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 16 }}>Upcoming Events</div>
+          {agendaEvents.length === 0 && <p style={{ color: COLORS.textMuted, fontSize: 13 }}>No upcoming events. Click "+ Add Event" to get started.</p>}
+          {(() => {
+            let lastDate = null;
+            return agendaEvents.map(ev => {
+              const showDate = ev.date !== lastDate;
+              lastDate = ev.date;
+              const d = new Date(ev.date + "T00:00:00");
+              return (
+                <div key={ev.id}>
+                  {showDate && (
+                    <div style={{ fontSize: 11, fontFamily: "'IBM Plex Mono', monospace", color: ev.date === todayStr ? COLORS.accent : COLORS.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", margin: "16px 0 8px", display: "flex", alignItems: "center", gap: 8 }}>
+                      <div style={{ width: 6, height: 6, borderRadius: "50%", background: ev.date === todayStr ? COLORS.accent : COLORS.border }} />
+                      {ev.date === todayStr ? "Today" : d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+                    </div>
+                  )}
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", borderRadius: 8, background: COLORS.surface2, border: `1px solid ${COLORS.border}`, marginBottom: 6, borderLeft: `3px solid ${typeObj(ev.type).color}` }}>
+                    <button onClick={() => toggleComplete(ev.id)} style={{ background: "none", border: "none", padding: 0, color: ev.completed ? COLORS.accent : COLORS.textMuted, flexShrink: 0 }}>
+                      <Icon name={ev.completed ? "check" : "task"} size={14} />
+                    </button>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 13, fontWeight: 500, textDecoration: ev.completed ? "line-through" : "none", opacity: ev.completed ? 0.6 : 1, marginBottom: 3 }}>{ev.title}</div>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <Badge label={typeObj(ev.type).label} color={typeObj(ev.type).color} small />
+                        {ev.time && <span style={{ fontSize: 11, color: COLORS.textMuted, fontFamily: "'IBM Plex Mono', monospace" }}>{ev.time}</span>}
+                        {ev.notes && <span style={{ fontSize: 11, color: COLORS.textMuted }}>{ev.notes.slice(0, 40)}{ev.notes.length > 40 ? "…" : ""}</span>}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <button onClick={() => openEdit(ev)} style={{ background: "none", border: "none", color: COLORS.textMuted, padding: 2 }}><Icon name="edit" size={13} /></button>
+                      <button onClick={() => del(ev.id)} style={{ background: "none", border: "none", color: COLORS.red + "70", padding: 2 }}><Icon name="trash" size={13} /></button>
+                    </div>
+                  </div>
+                </div>
+              );
+            });
+          })()}
+        </div>
+      )}
+
+      {modal === "form" && (
+        <Modal title={form.id ? "Edit Event" : "New Event"} onClose={() => setModal(null)}>
+          <FormRow label="Title"><input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} placeholder="Meeting with Prof. Weidenkaff, DFG deadline…" /></FormRow>
+          <FormRow label="Type">
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {EVENT_TYPES.map(t => (
+                <button key={t.key} onClick={() => setForm(f => ({ ...f, type: t.key }))}
+                  style={{ padding: "5px 12px", borderRadius: 99, border: `1px solid ${form.type === t.key ? t.color : COLORS.border}`, background: form.type === t.key ? t.color + "25" : "transparent", color: form.type === t.key ? t.color : COLORS.textMuted, fontSize: 12 }}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </FormRow>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <FormRow label="Date"><input type="date" value={form.date || ""} onChange={e => setForm(f => ({ ...f, date: e.target.value }))} /></FormRow>
+            <FormRow label="Time (optional)"><input type="time" value={form.time || ""} onChange={e => setForm(f => ({ ...f, time: e.target.value }))} /></FormRow>
+          </div>
+          <FormRow label="Notes"><textarea value={form.notes || ""} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} rows={3} style={{ resize: "vertical" }} /></FormRow>
+          <div style={{ display: "flex", gap: 10, justifyContent: "space-between" }}>
+            <div>{form.id && <Btn variant="danger" onClick={() => del(form.id)}><Icon name="trash" size={13} /> Delete</Btn>}</div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <Btn onClick={() => setModal(null)}>Cancel</Btn>
+              <Btn variant="primary" onClick={save}><Icon name="check" size={14} /> Save</Btn>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function ResearchOS() {
   const [active, setActive] = useState("dashboard");
@@ -776,6 +1049,7 @@ export default function ResearchOS() {
 
   const nav = [
     { id: "dashboard", label: "Dashboard", icon: "home" },
+    { id: "calendar", label: "Calendar", icon: "calview" },
     { id: "manuscripts", label: "Manuscripts", icon: "book" },
     { id: "analysis", label: "Echem AI", icon: "flask" },
     { id: "grants", label: "Grants", icon: "chart" },
@@ -838,6 +1112,7 @@ export default function ResearchOS() {
           </div>
           <div style={{ flex: 1, padding: "28px 32px", overflowY: "auto" }}>
             {active === "dashboard" && <Dashboard data={data} />}
+            {active === "calendar" && <Calendar data={data} setData={setData} />}
             {active === "manuscripts" && <Manuscripts data={data} setData={setData} />}
             {active === "analysis" && <ElectrochemAI />}
             {active === "grants" && <Grants data={data} setData={setData} />}
