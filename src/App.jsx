@@ -559,8 +559,14 @@ function DataChart({ file }) {
 
   // EIS Nyquist Plot
   if (chartType === "eis") {
-    const zrealKey = headers.find(h => h.toLowerCase().includes("zreal") || h.toLowerCase().includes("z'") || h.toLowerCase().includes("zre"));
-    const zimagKey = headers.find(h => h.toLowerCase().includes("zimag") || h.toLowerCase().includes("z\"") || h.toLowerCase().includes("zim"));
+    const zrealKey = headers.find(h => {
+      const l = h.toLowerCase();
+      return l.includes("zreal") || l === "z'" || l.includes("zre") || l === "zr" || l.includes("z_re");
+    });
+    const zimagKey = headers.find(h => {
+      const l = h.toLowerCase();
+      return l.includes("zimag") || l === "z\"" || l.includes("zim") || l === "zi" || l.includes("z_im");
+    });
     if (!zrealKey || !zimagKey) return null;
     const data = rows.map(r => ({ x: r[zrealKey], y: -Math.abs(r[zimagKey]) }));
     return (
@@ -581,8 +587,24 @@ function DataChart({ file }) {
 
   // CV Plot
   if (chartType === "cv") {
-    const xKey = headers.find(h => h.toLowerCase().includes("potential") || h.toLowerCase().includes("volt") || h.toLowerCase() === "v" || h.toLowerCase() === "e/v") || headers[0];
-    const yKeys = headers.filter(h => h !== xKey);
+    // Prefer potential/voltage column, explicitly exclude point number columns
+    const xKey = headers.find(h => {
+      const l = h.toLowerCase();
+      return (l.includes("vf") || l.includes("vm") || l === "e/v" || l === "ewe/v" ||
+        l.includes("potential") || l.includes("volt") || l === "v" || l === "e(v)") &&
+        !l.includes("pt") && !l.includes("point");
+    }) || headers.find(h => {
+      const l = h.toLowerCase();
+      return !l.includes("pt") && !l.includes("point") && !l.includes("time") &&
+        !l.includes("current") && !l.includes("im") && !l.includes("idx");
+    }) || headers[1]; // fallback to second column (skip Pt)
+    const yKeys = headers.filter(h => {
+      const l = h.toLowerCase();
+      return h !== xKey && (l.includes("im") || l.includes("current") || l.includes("i/") ||
+        l.includes("<i>") || l === "i" || l === "i(a)" || l === "i(ma)") ||
+        (h !== xKey && !h.toLowerCase().includes("pt") && !h.toLowerCase().includes("point") &&
+         !h.toLowerCase().includes("time") && headers.indexOf(h) > headers.indexOf(xKey));
+    }).slice(0, 3);
     return (
       <div style={chartStyle}>
         <div style={titleStyle}>Cyclic Voltammogram</div>
@@ -626,8 +648,12 @@ function DataChart({ file }) {
 
   // GCD
   if (chartType === "gcd") {
-    const xKey = headers.find(h => h.toLowerCase().includes("time") || h.toLowerCase().includes("capacity")) || headers[0];
-    const yKeys = headers.filter(h => h !== xKey);
+    const xKey = headers.find(h => {
+      const l = h.toLowerCase();
+      return (l.includes("time") || l === "t" || l.includes("capacity") || l.includes("q")) &&
+        !l.includes("pt") && !l.includes("point");
+    }) || headers.find(h => !h.toLowerCase().includes("pt") && !h.toLowerCase().includes("point")) || headers[1];
+    const yKeys = headers.filter(h => h !== xKey && !h.toLowerCase().includes("pt") && !h.toLowerCase().includes("point")).slice(0, 3);
     return (
       <div style={chartStyle}>
         <div style={titleStyle}>GCD Profile</div>
