@@ -585,9 +585,8 @@ function DataChart({ file }) {
     );
   }
 
-  // CV Plot
+  // CV Plot — rendered as scatter with line to show proper loop shape
   if (chartType === "cv") {
-    // Prefer potential/voltage column, explicitly exclude point number columns
     const xKey = headers.find(h => {
       const l = h.toLowerCase();
       return (l.includes("vf") || l.includes("vm") || l === "e/v" || l === "ewe/v" ||
@@ -596,27 +595,60 @@ function DataChart({ file }) {
     }) || headers.find(h => {
       const l = h.toLowerCase();
       return !l.includes("pt") && !l.includes("point") && !l.includes("time") &&
-        !l.includes("current") && !l.includes("im") && !l.includes("idx");
-    }) || headers[1]; // fallback to second column (skip Pt)
-    const yKeys = headers.filter(h => {
+        !l.includes("im") && !l.includes("idx");
+    }) || headers[1];
+
+    const yKey = headers.find(h => {
       const l = h.toLowerCase();
-      return h !== xKey && (l.includes("im") || l.includes("current") || l.includes("i/") ||
-        l.includes("<i>") || l === "i" || l === "i(a)" || l === "i(ma)") ||
-        (h !== xKey && !h.toLowerCase().includes("pt") && !h.toLowerCase().includes("point") &&
-         !h.toLowerCase().includes("time") && headers.indexOf(h) > headers.indexOf(xKey));
-    }).slice(0, 3);
+      return h !== xKey && (l === "im" || l === "i" || l === "i(a)" || l === "i(ma)" ||
+        l.includes("current") || l === "i/ma" || l === "<i>/ma" || l === "iwe/ma" ||
+        (l.startsWith("i") && !l.includes("pt") && !l.includes("idx") && !l.includes("vm") && !l.includes("vf")));
+    }) || headers.find(h => h !== xKey && !h.toLowerCase().includes("pt") && !h.toLowerCase().includes("time")) || headers[2];
+
+    if (!xKey || !yKey) return null;
+
+    const data = rows
+      .map(r => ({ x: r[xKey], y: r[yKey] }))
+      .filter(d => !isNaN(d.x) && !isNaN(d.y));
+
+    if (data.length < 3) return null;
+
+    const xMin = Math.min(...data.map(d => d.x));
+    const xMax = Math.max(...data.map(d => d.x));
+    const yMin = Math.min(...data.map(d => d.y));
+    const yMax = Math.max(...data.map(d => d.y));
+    const xPad = (xMax - xMin) * 0.06 || 0.05;
+    const yPad = (yMax - yMin) * 0.12 || 0.05;
+
     return (
       <div style={chartStyle}>
-        <div style={titleStyle}>Cyclic Voltammogram</div>
-        <ResponsiveContainer width="100%" height={240}>
-          <LineChart data={rows} margin={{ top: 5, right: 20, bottom: 20, left: 10 }}>
+        <div style={titleStyle}>Cyclic Voltammogram — {xKey} vs {yKey}</div>
+        <ResponsiveContainer width="100%" height={280}>
+          <ScatterChart margin={{ top: 10, right: 24, bottom: 28, left: 14 }}>
             <CartesianGrid {...gridStyle} />
-            <XAxis dataKey={xKey} label={{ value: `${xKey}`, position: "insideBottom", offset: -10, fill: "#64748b", fontSize: 10 }} {...axisStyle} />
-            <YAxis label={{ value: yKeys[0] || "Current", angle: -90, position: "insideLeft", fill: "#64748b", fontSize: 10 }} {...axisStyle} />
-            <Tooltip content={<CustomTooltip />} />
+            <XAxis dataKey="x" type="number" name={xKey}
+              domain={[xMin - xPad, xMax + xPad]}
+              label={{ value: `Potential, ${xKey} (V)`, position: "insideBottom", offset: -14, fill: "#64748b", fontSize: 10 }}
+              tickFormatter={v => v.toFixed(2)} {...axisStyle} />
+            <YAxis dataKey="y" type="number" name={yKey}
+              domain={[yMin - yPad, yMax + yPad]}
+              label={{ value: `Current, ${yKey} (mA)`, angle: -90, position: "insideLeft", offset: 5, fill: "#64748b", fontSize: 10 }}
+              tickFormatter={v => v.toFixed(3)} {...axisStyle} />
             <ReferenceLine y={0} stroke="#243050" strokeDasharray="3 3" />
-            {yKeys.map((k, i) => <Line key={k} type="monotone" dataKey={k} stroke={CHART_COLORS[i % CHART_COLORS.length]} dot={false} strokeWidth={2} />)}
-          </LineChart>
+            <Tooltip cursor={{ strokeDasharray: "3 3" }} content={({ active, payload }) => {
+              if (!active || !payload?.length) return null;
+              const d = payload[0]?.payload;
+              return (
+                <div style={{ background: "#1a2235", border: "1px solid #243050", borderRadius: 8, padding: "8px 12px", fontSize: 12 }}>
+                  <div style={{ color: "#00d4aa" }}>V: <strong>{d?.x?.toFixed(4)}</strong></div>
+                  <div style={{ color: "#3b82f6" }}>I: <strong>{d?.y?.toFixed(5)}</strong></div>
+                </div>
+              );
+            }} />
+            <Scatter data={data} fill={CHART_COLORS[0]}
+              line={{ stroke: CHART_COLORS[0], strokeWidth: 2 }}
+              lineType="joint" shape={() => null} />
+          </ScatterChart>
         </ResponsiveContainer>
       </div>
     );
@@ -709,8 +741,8 @@ function ElectrochemAI() {
       return;
     }
     const read = await Promise.all(supported.map(readFile));
-    // Truncate large files to first 8000 chars
-    const processed = read.map(f => ({ ...f, content: f.content.slice(0, 8000), truncated: f.content.length > 8000 }));
+    // Truncate large files to first 50000 chars for chart, 8000 for AI
+    const processed = read.map(f => ({ ...f, content: f.content.slice(0, 50000), aiContent: f.content.slice(0, 8000), truncated: f.content.length > 50000 }));
     setAttachedFiles(prev => [...prev, ...processed]);
   };
 
@@ -747,11 +779,24 @@ function ElectrochemAI() {
         .filter(m => !m.content.includes("--- FILE:"))
         .map(m => ({ role: m.role, content: m.content }));
 
+      // Trim file content more aggressively to avoid token limits
+      const safeFileBlock = attachedFiles.map(f => {
+        const lines = f.content.split("\n").filter(l => l.trim()).slice(0, 200);
+        return `\n\n--- FILE: ${f.name} ---\n${lines.join("\n")}`;
+      }).join("\n");
+
+      const fullUserMsg = (input.trim() || "Please analyze this electrochemical data file. Identify the data type, extract key parameters, and provide expert interpretation for my waste-derived carbon research.") + safeFileBlock;
+
       const response = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true"
+        },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: "claude-haiku-4-5-20251001",
           max_tokens: 1500,
           system: `You are an expert electrochemical data analysis assistant for Dr. Jibril, an Alexander von Humboldt Postdoctoral Fellow at TU Darmstadt. His research focuses on waste-derived carbon architectures for Li-S batteries, sodium-ion batteries, supercapacitors, and hydrogen storage. He uses operando Raman spectroscopy, COMSOL multiphysics modeling, and machine learning integration.
 
@@ -764,14 +809,23 @@ When analyzing data files:
 - Format numbers clearly with units
 
 Be precise, expert, and concise.`,
-          messages: [...history, { role: "user", content: userMsg }],
+          messages: [...history, { role: "user", content: fullUserMsg }],
         }),
       });
-      const data = await response.json();
-      const reply = data.content?.[0]?.text || "I couldn't process that request.";
+
+      const result = await response.json();
+
+      // Show actual API error if present
+      if (result.error) {
+        setMessages(prev => [...prev, { role: "assistant", content: `⚠️ API Error: ${result.error.message || JSON.stringify(result.error)}` }]);
+        setLoading(false);
+        return;
+      }
+
+      const reply = result.content?.[0]?.text || "No response content received.";
       setMessages(prev => [...prev, { role: "assistant", content: reply }]);
     } catch (err) {
-      setMessages(prev => [...prev, { role: "assistant", content: "Connection error. Please check your API key and try again." }]);
+      setMessages(prev => [...prev, { role: "assistant", content: `⚠️ Request failed: ${err.message}. Check your API key and internet connection.` }]);
     }
     setLoading(false);
   };
