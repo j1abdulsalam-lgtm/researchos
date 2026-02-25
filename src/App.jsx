@@ -384,44 +384,149 @@ function Manuscripts({ data, setData }) {
 
 // ─── Chart Utilities ──────────────────────────────────────────────────────────
 const parseCSVData = (content) => {
-  const lines = content.trim().split("\n").filter(l => l.trim());
+  const allLines = content.split("\n");
+
+  // ── Gamry DTA format ──────────────────────────────────────────────────────
+  // DTA files have metadata at top, then a "CURVE\tTABLE" line, then headers, then data
+  const curveIdx = allLines.findIndex(l => /^CURVE/i.test(l.trim()));
+  if (curveIdx !== -1) {
+    // Header line is right after CURVE line
+    const headerLine = allLines[curveIdx + 1];
+    if (headerLine) {
+      const headers = headerLine.split("\t").map(h => h.trim()).filter(Boolean);
+      // Skip the units row (next line often has units like "s", "V", "A")
+      let dataStart = curveIdx + 2;
+      const unitsLine = allLines[dataStart];
+      if (unitsLine && unitsLine.split("\t").every(p => isNaN(parseFloat(p.trim())))) dataStart++;
+      const rows = [];
+      for (let i = dataStart; i < allLines.length; i++) {
+        const line = allLines[i].trim();
+        if (!line || line.startsWith("EXPERIMENTABORTED") || line.startsWith("EOC")) break;
+        const parts = line.split("\t");
+        const vals = parts.map(v => parseFloat(v.trim()));
+        if (vals.length >= 2 && vals.slice(0, 2).every(v => !isNaN(v))) {
+          const row = {};
+          headers.forEach((h, idx) => { if (!isNaN(vals[idx])) row[h] = vals[idx]; });
+          rows.push(row);
+        }
+      }
+      if (rows.length > 1) return { headers: headers.filter(h => rows[0][h] !== undefined), rows, format: "gamry" };
+    }
+  }
+
+  // ── BioLogic MPT format ───────────────────────────────────────────────────
+  // MPT files have "Nb header lines : N" near top, data starts after N lines
+  const nbHeaderLine = allLines.findIndex(l => /^Nb header lines/i.test(l));
+  if (nbHeaderLine !== -1) {
+    const match = allLines[nbHeaderLine].match(/:\s*(\d+)/);
+    if (match) {
+      const nbHeaders = parseInt(match[1]);
+      const headerLine = allLines[nbHeaders - 1];
+      const sep = headerLine.includes("\t") ? "\t" : ";";
+      const headers = headerLine.split(sep).map(h => h.trim()).filter(Boolean);
+      const rows = [];
+      for (let i = nbHeaders; i < allLines.length; i++) {
+        const parts = allLines[i].split(sep);
+        const vals = parts.map(v => parseFloat(v.trim().replace(",", ".")));
+        if (vals.length >= 2 && !vals.slice(0, 2).some(isNaN)) {
+          const row = {};
+          headers.forEach((h, idx) => { if (!isNaN(vals[idx])) row[h] = vals[idx]; });
+          rows.push(row);
+        }
+      }
+      if (rows.length > 1) return { headers: headers.filter(h => rows[0][h] !== undefined), rows, format: "biologic" };
+    }
+  }
+
+  // ── Generic: scan through lines to find the best header+data block ────────
+  const lines = allLines.filter(l => l.trim());
   if (lines.length < 2) return null;
 
-  // Find header line (first line with non-numeric content)
-  let headerIdx = 0;
-  for (let i = 0; i < Math.min(5, lines.length); i++) {
-    const parts = lines[i].split(/[,;\t]+/);
-    if (parts.some(p => isNaN(parseFloat(p.trim())) && p.trim().length > 0)) {
-      headerIdx = i; break;
-    }
+  // Find the first line that looks like a header (has text labels) followed by numeric data
+  let bestHeaderIdx = -1;
+  let bestSep = ",";
+  for (let i = 0; i < Math.min(60, lines.length); i++) {
+    const sep = lines[i].includes("\t") ? "\t" : lines[i].includes(";") ? ";" : ",";
+    const parts = lines[i].split(sep).map(p => p.trim().replace(/['"]/g, ""));
+    if (parts.length < 2) continue;
+    // This line has text headers
+    const hasText = parts.some(p => isNaN(parseFloat(p)) && p.length > 0 && /[a-zA-Z]/.test(p));
+    if (!hasText) continue;
+    // Check that the NEXT line has numeric data
+    if (i + 1 >= lines.length) continue;
+    const nextParts = lines[i + 1].split(sep).map(p => parseFloat(p.trim().replace(",", ".")));
+    const numericCount = nextParts.filter(v => !isNaN(v)).length;
+    if (numericCount >= 2) { bestHeaderIdx = i; bestSep = sep; break; }
   }
 
-  const sep = lines[headerIdx].includes("\t") ? "\t" : lines[headerIdx].includes(";") ? ";" : ",";
-  const headers = lines[headerIdx].split(sep).map(h => h.trim().replace(/['"]/g, ""));
+  // If no text header found, try to find two consecutive all-numeric lines
+  if (bestHeaderIdx === -1) {
+    for (let i = 0; i < Math.min(60, lines.length) - 1; i++) {
+      const sep = lines[i].includes("\t") ? "\t" : lines[i].includes(";") ? ";" : ",";
+      const a = lines[i].split(sep).map(p => parseFloat(p.trim()));
+      const b = lines[i + 1].split(sep).map(p => parseFloat(p.trim()));
+      if (a.length >= 2 && b.length >= 2 && a.every(v => !isNaN(v)) && b.every(v => !isNaN(v))) {
+        // Generate generic headers
+        const headers = a.map((_, idx) => `Col${idx + 1}`);
+        const rows = [];
+        for (let j = i; j < lines.length; j++) {
+          const vals = lines[j].split(sep).map(p => parseFloat(p.trim()));
+          if (vals.length >= 2 && !vals.slice(0,2).some(isNaN)) {
+            const row = {};
+            headers.forEach((h, idx) => { row[h] = vals[idx]; });
+            rows.push(row);
+          }
+        }
+        if (rows.length > 1) return { headers, rows, format: "numeric" };
+      }
+    }
+    return null;
+  }
+
+  const headers = lines[bestHeaderIdx].split(bestSep).map(h => h.trim().replace(/['"]/g, "")).filter(Boolean);
   const rows = [];
-  for (let i = headerIdx + 1; i < lines.length; i++) {
-    const vals = lines[i].split(sep).map(v => parseFloat(v.trim()));
-    if (vals.every(v => !isNaN(v))) {
+  for (let i = bestHeaderIdx + 1; i < lines.length; i++) {
+    const parts = lines[i].split(bestSep);
+    const vals = parts.map(v => parseFloat(v.trim().replace(",", ".")));
+    if (vals.length >= 2 && !vals.slice(0, 2).some(isNaN)) {
       const row = {};
-      headers.forEach((h, idx) => { row[h] = vals[idx]; });
-      rows.push(row);
+      headers.forEach((h, idx) => { if (idx < vals.length && !isNaN(vals[idx])) row[h] = vals[idx]; });
+      if (Object.keys(row).length >= 2) rows.push(row);
     }
   }
-  return rows.length > 0 ? { headers, rows } : null;
+  return rows.length > 1 ? { headers: headers.filter(h => rows[0][h] !== undefined), rows, format: "csv" } : null;
 };
 
-const detectChartType = (headers) => {
+const detectChartType = (headers, format) => {
   const h = headers.map(h => h.toLowerCase());
   const joined = h.join(" ");
 
+  // EIS — Nyquist
+  if (h.some(x => x.includes("zreal") || x.includes("z_re") || x === "zr" || x === "z'" || x.includes("zre(ohm)"))) return "eis";
   if (joined.includes("zimag") || joined.includes("z\"") || joined.includes("-zimag") || joined.includes("z_imag")) return "eis";
-  if (joined.includes("potential") || joined.includes("voltage") || joined.includes("volt") || joined.includes(" v ") || h.some(x => x === "v" || x === "e/v")) return "cv";
+
+  // CV — potential vs current
+  if (h.some(x => x === "vf" || x === "vm" || x === "e/v" || x === "ewe/v")) return "cv";
+  if (joined.includes("potential") || joined.includes("volt") || h.some(x => x === "v" || x === "e(v)")) return "cv";
+  if (h.some(x => x === "im" || x === "i/ma" || x === "<i>/ma")) return "cv";
+
+  // GCD — time/capacity vs voltage
+  if (h.some(x => x === "t" || x === "time/s")) return "gcd";
   if (joined.includes("time") && (joined.includes("current") || joined.includes("voltage") || joined.includes("capacity"))) return "gcd";
   if (joined.includes("capacity") || joined.includes("discharge") || joined.includes("charge")) return "gcd";
-  if (joined.includes("frequency") || joined.includes("freq")) return "eis_bode";
-  if (joined.includes("2theta") || joined.includes("angle") || joined.includes("2th")) return "xrd";
-  if (joined.includes("wavenumber") || joined.includes("raman") || joined.includes("shift")) return "raman";
-  if (joined.includes("temperature") || joined.includes("temp")) return "tga";
+
+  // Bode
+  if (joined.includes("frequency") || joined.includes("freq") || h.some(x => x === "freq/hz")) return "eis_bode";
+
+  // XRD
+  if (joined.includes("2theta") || joined.includes("angle") || joined.includes("2th") || h.some(x => x === "2th")) return "xrd";
+
+  // Raman
+  if (joined.includes("wavenumber") || joined.includes("raman") || joined.includes("shift") || h.some(x => x === "cm-1" || x === "delta_cm-1")) return "raman";
+
+  // TGA / DSC
+  if (joined.includes("temperature") || joined.includes("temp") || h.some(x => x === "temp/°c" || x === "t/°c")) return "tga";
+
   return "line";
 };
 
@@ -443,8 +548,8 @@ function DataChart({ file }) {
   const parsed = parseCSVData(file.content);
   if (!parsed) return null;
 
-  const { headers, rows } = parsed;
-  const chartType = detectChartType(headers);
+  const { headers, rows, format } = parsed;
+  const chartType = detectChartType(headers, format);
   const h = headers.map(x => x.toLowerCase());
 
   const chartStyle = { background: "#0f1829", border: "1px solid #243050", borderRadius: 10, padding: "16px 8px 8px", marginTop: 10 };
@@ -740,7 +845,7 @@ Be precise, expert, and concise.`,
               {/* Render charts for user messages with files */}
               {m.files && m.files.map((f, fi) => {
                 const parsed = parseCSVData(f.content);
-                if (!parsed) return null;
+                if (!parsed || parsed.rows.length < 2) return null;
                 return (
                   <div key={fi} style={{ width: "100%", minWidth: 320 }}>
                     <DataChart file={f} />
